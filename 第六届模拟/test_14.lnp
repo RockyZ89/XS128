@@ -1,0 +1,5 @@
+"STARTUP.obj",
+"ds18b20.obj",
+"main.obj" 
+TO "test_14" 
+RAMSIZE(256) 

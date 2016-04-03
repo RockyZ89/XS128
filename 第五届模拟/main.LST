@@ -1,0 +1,498 @@
+C51 COMPILER V9.00   MAIN                                                                  03/06/2016 11:47:59 PAGE 1   
+
+
+C51 COMPILER V9.00, COMPILATION OF MODULE MAIN
+OBJECT MODULE PLACED IN main.OBJ
+COMPILER INVOKED BY: D:\Program Files (x86)\KEIL\C51\BIN\C51.EXE main.c BROWSE DEBUG OBJECTEXTEND
+
+line level    source
+
+   1          #include "K60S2.h"
+   2          #include "intrins.h"
+   3          #include "absacc.h"
+   4          #include "DS1302.h"
+   5          #include "iic.h"
+   6          
+   7          #define RESET 0
+   8          #define SET 1
+   9          
+  10          #define write_com(a,b) {P0 = a; P2 = b;}
+  11          
+  12          
+  13          /**********************变量定义**********************/
+  14          /*------------系统全局-------------*/
+  15          ulong time_base_2ms = 0;  
+  16          bit uart_send_flg = RESET;
+  17          
+  18          #define K 0.38671875
+  19          uchar current_humidity;
+  20          uchar humidity_threshold = 50;
+  21          bit  humidity_disp_flg = RESET;
+  22          bit humidity_threshold_set_flg = RESET;
+  23          enum{
+  24                  water_state_close,
+  25                  water_state_open        
+  26          } water_state = water_state_close;
+  27          enum{
+  28                  system_work_state_auto,
+  29                  system_work_state_manul
+  30          }system_work_state;
+  31          enum{
+  32                  system_state_pilot_L1,
+  33                  system_state_pilot_L2           
+  34          }system_state_pilot;
+  35          
+  36          
+  37          /*---------------U24[]定义-----------*/
+  38          code uchar U24[] = {0x00, 0x20, 0x40, 0x60, 0x80, 0xa0, 0xc0, 0xe0};
+  39          /*
+  40            3              8255的CE
+  41            4              LED锁存
+  42            5              UNL 2003
+  43            6              数码管位选
+  44            7              数码管段选
+  45          */
+  46          #define LED  4
+  47          #define WEI 6
+  48          #define DUAN 7
+  49          
+  50          /*---------------LED定义--------------*/
+  51          bit prompt_flash_flg = RESET;
+  52          
+  53          #define LED_ON    0
+  54          #define LED_OFF   1
+  55          
+C51 COMPILER V9.00   MAIN                                                                  03/06/2016 11:47:59 PAGE 2   
+
+  56          
+  57          /*---------------蜂鸣器 & 继电器--------------*/
+  58          bit buzzer_warn_flg = SET;
+  59          enum{
+  60                  buzzer_state_close,
+  61                  buzzer_state_open       
+  62          } buzzer_state;
+  63          
+  64          
+  65          
+  66          /*---------------数码管定义-----------*/
+  67          code uchar Smg_Duan[]={0xc0, 0xf9, 0xa4, 0xb0, 0x99, 0x92, 0x82, 0xf8, 0x80, 0x90,0xff,0xbf};
+  68                                       //  0     1     2      3     4     5     6     7     8     9  无     -
+  69          uchar Smg_add = 0;
+  70          uchar SmgBuf[]={10,10,10,10,10,10,10,10};
+  71          bit smg_changed_flg = RESET;
+  72                                    //   全关
+  73          /*--------------蜂鸣器 && 继电器--------------*/
+  74          #define UNL  5
+  75          #define relay_act 1
+  76          #define relay_stop 0
+  77          
+  78          /*---------------键盘定义-----------*/
+  79          bit Key_scan_flg = RESET;
+  80          
+  81          /*---------------DS1302-----------*/
+  82          bit read_time_flg = SET;
+  83          
+  84          /*---------------PCF8591-----------*/
+  85          bit AD_read_flg = RESET;
+  86          
+  87          /*---------------AT24B02-----------*/
+  88          bit EEPROM_read_flg = RESET;
+  89          bit EEPROM_write_flg = RESET;
+  90          
+  91          /*--------------键盘动作-------------------*/
+  92          typedef enum{
+  93                  Key_Free,
+  94                  Key_S4,
+  95                  Key_S5,
+  96                  Key_S6,
+  97                  Key_S7
+  98          } KeyValue_Typedef;
+  99          KeyValue_Typedef Key_Value = Key_Free;
+ 100          
+ 101          
+ 102          /**********************蜂鸣器 & 继电器****************/
+ 103          void Buzzer(bit state){
+ 104   1      //      P2 = 0x1f;
+ 105   1      //      P0 = 0x00;
+ 106   1              if(state == 1){  //打开
+ 107   2                      P2 = U24[UNL];
+ 108   2                      P0 = P0 | (0x01 << 6); 
+ 109   2              }
+ 110   1              else{
+ 111   2                      P2 = U24[UNL];
+ 112   2                      P0 = P0 & (~(0x01 << 6)); 
+ 113   2              }
+ 114   1      //      P2 = 0x1f;
+ 115   1      //      P0 = 0x00;
+ 116   1      }
+ 117          void Relay(bit state){
+C51 COMPILER V9.00   MAIN                                                                  03/06/2016 11:47:59 PAGE 3   
+
+ 118   1      //      P2 = 0x1f;
+ 119   1      //      P0 = 0x00;
+ 120   1              if(state == 1){  //打开
+ 121   2                      P2 = U24[UNL];
+ 122   2                      P0 = P0 | (0x01 << 4);
+ 123   2              }
+ 124   1              else{
+ 125   2                      P2 = U24[UNL];  
+ 126   2                      P0 = P0 & (~(0x01 << 4));               
+ 127   2              }
+ 128   1      //      P2 = 0x1f;
+ 129   1      //      P0 = 0x00;
+ 130   1      }
+ 131          
+ 132          
+ 133          /**********************LED流水灯**********************/
+ 134          void L1_disp(bit state){
+ 135   1              P2 = 0x1f;
+ 136   1              P0 = 0xff;
+ 137   1              P2 = U24[4];
+ 138   1              if(state == LED_ON)
+ 139   1                      P0 = 0xfe;
+ 140   1              else P0 = 0xff; 
+ 141   1              P2 = 0x1f;
+ 142   1              P0 = 0x00;
+ 143   1      }
+ 144          void L2_disp(bit state){
+ 145   1              P2 = 0x1f;
+ 146   1              P0 = 0xff;
+ 147   1              P2 = U24[4];
+ 148   1              if(state == LED_ON)
+ 149   1                      P0 = 0xfd;
+ 150   1              else P0 = 0xff; 
+ 151   1              P2 = 0x1f;
+ 152   1              P0 = 0x00;
+ 153   1      }
+ 154          
+ 155          /**********************数码管**********************/
+ 156          void Smg_disp(uchar SmgBuf[]){
+ 157   1              P2 = U24[WEI];
+ 158   1              P0 = 0x00;
+ 159   1      
+ 160   1              P2 = 0x1f;
+ 161   1              P0 = 0xff;
+ 162   1              P2 = U24[DUAN];
+ 163   1              P0 = Smg_Duan[SmgBuf[Smg_add]];
+ 164   1              
+ 165   1              P2 = 0x1f;
+ 166   1              P0 = 0x00;
+ 167   1              P2 = U24[WEI];
+ 168   1              P0 = 1<< Smg_add;
+ 169   1      
+ 170   1              P2 = 0x1f;
+ 171   1              P0 = 0x00;
+ 172   1              
+ 173   1              Smg_add++;
+ 174   1              if(Smg_add >=8) Smg_add = 0;            
+ 175   1      }
+ 176          
+ 177          
+ 178          
+ 179          /**********************矩阵键盘********************/
+C51 COMPILER V9.00   MAIN                                                                  03/06/2016 11:47:59 PAGE 4   
+
+ 180          void Key_Scan(){
+ 181   1              P44 = 0;
+ 182   1              if(P33 == 0){           
+ 183   2                      Key_Value = Key_S4;
+ 184   2                      while(P33 == 0);
+ 185   2              }
+ 186   1              else if(P32 == 0){
+ 187   2                      Key_Value = Key_S5;
+ 188   2                      while(P32 == 0);
+ 189   2              }       
+ 190   1              else if(P31 == 0){
+ 191   2                      Key_Value = Key_S6;
+ 192   2                      while(P31 == 0);
+ 193   2              }
+ 194   1              else if(P30 == 0){
+ 195   2                      Key_Value = Key_S7;
+ 196   2                      while(P30 == 0);
+ 197   2              }
+ 198   1      }
+ 199          void Put_S4(){
+ 200   1              if(system_work_state == system_work_state_auto){
+ 201   2                      if(humidity_threshold_set_flg == SET){
+ 202   3                              humidity_threshold--;   
+ 203   3                              smg_changed_flg = RESET;                
+ 204   3                      }
+ 205   2              }
+ 206   1              else{
+ 207   2                      water_state = water_state_close;
+ 208   2              }
+ 209   1      }
+ 210          void Put_S5(){
+ 211   1              if(system_work_state == system_work_state_auto){
+ 212   2                      if(humidity_threshold_set_flg == SET){
+ 213   3                              humidity_threshold++;
+ 214   3                              smg_changed_flg = RESET;
+ 215   3                      }
+ 216   2              }
+ 217   1              else{
+ 218   2                      water_state = water_state_open;
+ 219   2              }
+ 220   1      }
+ 221          void Put_S6(){
+ 222   1              if(system_work_state == system_work_state_auto){
+ 223   2                      humidity_threshold_set_flg = ~humidity_threshold_set_flg;
+ 224   2                      smg_changed_flg = RESET;
+ 225   2                      if(humidity_threshold_set_flg == SET){
+ 226   3                              humidity_disp_flg = RESET;                      
+ 227   3                      }
+ 228   2                      else{
+ 229   3                              humidity_disp_flg = SET;        
+ 230   3                              EEPROM_write(0x03,humidity_threshold);
+ 231   3                      }
+ 232   2              }
+ 233   1              else{
+ 234   2                      buzzer_warn_flg = ~buzzer_warn_flg;                     
+ 235   2              }
+ 236   1      }
+ 237          void Put_S7(){
+ 238   1              system_work_state++;
+ 239   1              if(system_work_state > system_work_state_manul)
+ 240   1                      system_work_state = system_work_state_auto;     
+ 241   1              smg_changed_flg = RESET;
+C51 COMPILER V9.00   MAIN                                                                  03/06/2016 11:47:59 PAGE 5   
+
+ 242   1      }
+ 243          
+ 244          void Key_Ack(){
+ 245   1              switch(Key_Value){
+ 246   2                      case Key_S4:
+ 247   2                              Put_S4();
+ 248   2                              break;
+ 249   2                      case Key_S5:
+ 250   2                              Put_S5();
+ 251   2                              break;
+ 252   2                      case Key_S6:
+ 253   2                              Put_S6();
+ 254   2                              break;
+ 255   2                      case Key_S7:
+ 256   2                              Put_S7();
+ 257   2                              break;
+ 258   2              }
+ 259   1              Key_Value = Key_Free;                   
+ 260   1      }
+ 261          
+ 262          /*********************工作状态**********************/
+ 263          void windows_def(){
+ 264   1              if(prompt_flash_flg ==SET){
+ 265   2                              SmgBuf[2] = 11;  
+ 266   2                      }
+ 267   1                      else SmgBuf[2] = 10;
+ 268   1              if(smg_changed_flg == RESET){
+ 269   2                      uchar tmp;
+ 270   2                      tmp =  Ds1302_Single_Byte_Read(0x83);
+ 271   2                      SmgBuf[3] = tmp / 10;
+ 272   2                      SmgBuf[4] = tmp % 10;
+ 273   2                      tmp =  Ds1302_Single_Byte_Read(0x85);
+ 274   2                      SmgBuf[0] = tmp / 10;
+ 275   2                      SmgBuf[1] = tmp % 10; 
+ 276   2                      SmgBuf[6] = current_humidity / 10;
+ 277   2                      SmgBuf[7] = current_humidity % 10;
+ 278   2                      smg_changed_flg = SET;
+ 279   2              }   //界面初始化
+ 280   1              if(read_time_flg == SET){
+ 281   2                      uchar tmp;
+ 282   2                      read_time_flg = RESET;
+ 283   2                      tmp = Ds1302_Single_Byte_Read(0x81);
+ 284   2                      if((tmp == 0x59) || (tmp == 0x00) || (tmp == 0x01)){
+ 285   3                              tmp = Ds1302_Single_Byte_Read(0x83);    
+ 286   3                              SmgBuf[3] = tmp / 10;
+ 287   3                              SmgBuf[4] = tmp % 10;
+ 288   3                              smg_changed_flg = SET;
+ 289   3                              if(tmp == 0x00){
+ 290   4                                      tmp = Ds1302_Single_Byte_Read(0x85);
+ 291   4                                      SmgBuf[0] = tmp / 10;
+ 292   4                                      SmgBuf[1] = tmp % 10;
+ 293   4                                      smg_changed_flg = SET;  
+ 294   4                              }       
+ 295   3                      }
+ 296   2              }   //读时间显示
+ 297   1              if(humidity_disp_flg == SET){
+ 298   2                      SmgBuf[6] = current_humidity / 10;
+ 299   2                      SmgBuf[7] = current_humidity % 10;
+ 300   2                      humidity_disp_flg = RESET;
+ 301   2                      smg_changed_flg = SET;  
+ 302   2              } //当前阈值显示                
+ 303   1      }
+C51 COMPILER V9.00   MAIN                                                                  03/06/2016 11:47:59 PAGE 6   
+
+ 304          void System_auto_mode(){
+ 305   1              system_state_pilot = system_state_pilot_L1;
+ 306   1              Buzzer(RESET);  
+ 307   1              if(humidity_threshold_set_flg == RESET){
+ 308   2                      windows_def();
+ 309   2                      if(current_humidity < humidity_threshold){
+ 310   3                              Relay(SET);     
+ 311   3                      }
+ 312   2                      else{
+ 313   3                              Relay(RESET);   
+ 314   3                      }                       
+ 315   2              }
+ 316   1              else{
+ 317   2                      if(smg_changed_flg == RESET){
+ 318   3                              SmgBuf[0] = 11;
+ 319   3                              SmgBuf[1] = 11;
+ 320   3                              SmgBuf[2] = 10;
+ 321   3                              SmgBuf[3] = 10;
+ 322   3                              SmgBuf[4] = 10;
+ 323   3                              SmgBuf[5] = 10;
+ 324   3                              SmgBuf[6] = humidity_threshold / 10;
+ 325   3                              SmgBuf[7] = humidity_threshold % 10;
+ 326   3                              smg_changed_flg = SET;
+ 327   3                      }        //调整界面初始化       
+ 328   2              }
+ 329   1      }
+ 330          void System_manul_mode(){
+ 331   1              system_state_pilot = system_state_pilot_L2;
+ 332   1              windows_def();
+ 333   1              if(water_state == water_state_open){
+ 334   2                      Relay(SET);
+ 335   2              }
+ 336   1              else{
+ 337   2                      Relay(RESET);
+ 338   2              }
+ 339   1              if(buzzer_warn_flg == SET){
+ 340   2                      if(current_humidity < humidity_threshold){
+ 341   3                              Buzzer(SET);
+ 342   3                      }
+ 343   2                      else{
+ 344   3                              Buzzer(RESET);
+ 345   3                      }
+ 346   2              }
+ 347   1      }
+ 348          void System_work(){
+ 349   1              switch(system_work_state){
+ 350   2                      case system_work_state_auto:
+ 351   2                              System_auto_mode();
+ 352   2                              break;
+ 353   2                      case system_work_state_manul:
+ 354   2                              System_manul_mode();
+ 355   2                              break;                  
+ 356   2              }       
+ 357   1      } 
+ 358          void System_pilot(){
+ 359   1              switch(system_state_pilot){
+ 360   2                      case system_state_pilot_L1:
+ 361   2                              L2_disp(LED_OFF);
+ 362   2                              L1_disp(LED_ON);                
+ 363   2                              break;
+ 364   2                      case system_state_pilot_L2:
+ 365   2                              L1_disp(LED_OFF);
+C51 COMPILER V9.00   MAIN                                                                  03/06/2016 11:47:59 PAGE 7   
+
+ 366   2                              L2_disp(LED_ON);
+ 367   2                              break;  
+ 368   2              }
+ 369   1      }
+ 370          
+ 371          /**********************初始化程序*******************/
+ 372          void Timer0Init(void)           //1毫秒@11.0592MHz
+ 373          {
+ 374   1              AUXR |= 0x80;           //定时器时钟1T模式
+ 375   1              TMOD &= 0xF0;           //设置定时器模式
+ 376   1      //      TL0 = 0xCD;             //设置定时初值          
+ 377   1      //      TH0 = 0xD4;             //设置定时初值
+ 378   1              TL0 = 0x9A;             //设置定时初值
+ 379   1              TH0 = 0xA9;             //设置定时初值
+ 380   1      //      TL0 = 0x00;             //设置定时初值
+ 381   1      //      TH0 = 0x28;             //设置定时初值
+ 382   1              TF0 = 0;                //清除TF0标志
+ 383   1              TR0 = 1;                //定时器0开始计时
+ 384   1              ET0 = 1;
+ 385   1              EA = 1;
+ 386   1      }
+ 387          
+ 388          void UartInit(void)             //9600bps@11.0592MHz
+ 389          {
+ 390   1              SCON = 0x50;            //8位数据,可变波特率
+ 391   1              AUXR |= 0x40;           //定时器1时钟为Fosc,即1T
+ 392   1              AUXR &= 0xFE;           //串口1选择定时器1为波特率发生器
+ 393   1              TMOD &= 0x0F;           //设定定时器1为16位自动重装方式
+ 394   1              TL1 = 0xE0;             //设定定时初值
+ 395   1              TH1 = 0xFE;             //设定定时初值
+ 396   1              ET1 = 0;                //禁止定时器1中断
+ 397   1              TR1 = 1;                //启动定时器1
+ 398   1      }
+ 399          void Board_init(){
+ 400   1              P2 = U24[5];     //关蜂鸣器 & 继电器
+ 401   1              P0 = 0x00;
+ 402   1              
+ 403   1      
+ 404   1              P2 = U24[LED];   //关LED
+ 405   1              P0 = 0xff;
+ 406   1      }
+ 407          
+ 408          
+ 409          void system_init(){
+ 410   1              Board_init();                            
+ 411   1              UartInit();                                 
+ 412   1              Timer0Init();
+ 413   1              AD_init();
+ 414   1              DS1302_Init();
+ 415   1      }
+ 416          
+ 417          /**********************主函数**********************/
+ 418          void main(){
+ 419   1              system_init();
+ 420   1              EEPROM_write(2,0x44);
+ 421   1              write_com(0x00,0xff);
+ 422   1          while(1)
+ 423   1          {
+ 424   2                      System_work();
+ 425   2                      if(Key_scan_flg == SET){
+ 426   3                              Key_scan_flg = 0;
+ 427   3                              Key_Scan();     
+C51 COMPILER V9.00   MAIN                                                                  03/06/2016 11:47:59 PAGE 8   
+
+ 428   3                              Key_Ack();
+ 429   3                      }
+ 430   2                      if(AD_read_flg == SET){
+ 431   3                              AD_read_flg = RESET;
+ 432   3                              current_humidity = (uchar)(K * AD_read() + 0.5);
+ 433   3                              humidity_disp_flg = SET;                        
+ 434   3                      }       
+ 435   2          }
+ 436   1      }
+ 437          /**********************中断入口********************/
+ 438          void Timer0() interrupt 1
+ 439          {                
+ 440   1              time_base_2ms++;
+ 441   1              Smg_disp(SmgBuf);
+ 442   1              System_pilot();
+ 443   1              if(time_base_2ms % 5 == 0){
+ 444   2                      Key_scan_flg = SET;     
+ 445   2              } 
+ 446   1              if(time_base_2ms % 50 == 0){
+ 447   2                      AD_read_flg = SET;
+ 448   2              } 
+ 449   1              if(time_base_2ms % 250 == 0){
+ 450   2                      read_time_flg = SET;
+ 451   2              }
+ 452   1              if(time_base_2ms % 500 == 0){
+ 453   2                      prompt_flash_flg = ~prompt_flash_flg;
+ 454   2              }
+ 455   1              
+ 456   1      }
+ 457          void Uart1() interrupt 4
+ 458          {
+ 459   1              TI = 0; 
+ 460   1      }
+ 461                            
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   1074    ----
+   CONSTANT SIZE    =     20    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     20       1
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =     11       4
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)

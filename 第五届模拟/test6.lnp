@@ -1,0 +1,6 @@
+"STARTUP.obj",
+"DS1302.obj",
+"iic.obj",
+"main.obj" 
+TO "test6" 
+RAMSIZE(256) 

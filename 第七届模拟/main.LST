@@ -1,0 +1,444 @@
+C51 COMPILER V9.00   MAIN                                                                  03/03/2016 18:12:01 PAGE 1   
+
+
+C51 COMPILER V9.00, COMPILATION OF MODULE MAIN
+OBJECT MODULE PLACED IN main.OBJ
+COMPILER INVOKED BY: D:\Program Files (x86)\KEIL\C51\BIN\C51.EXE main.c BROWSE DEBUG OBJECTEXTEND
+
+line level    source
+
+   1          #include "K60S2.h"
+   2          #include "intrins.h"
+   3          #include "DS18B20.h"
+   4          #include "absacc.h"
+   5          #include "DS1302.h"
+   6          
+   7          /**********************变量定义**********************/
+   8          ulong time_base_2ms = 0;   //时间轴
+   9          bit Uart_send_flg = 1;
+  10          uint sec= 0;
+  11          bit prompt_flash_flg = 1; 
+  12          bit system_run_reset = 0;
+  13          
+  14          
+  15          /*---------------U24[]定义-----------*/
+  16          uchar U24[] = {0x00, 0x20, 0x40, 0x60, 0x80, 0xa0, 0xc0, 0xe0};
+  17          /*
+  18            3              8255的CE
+  19            4              LED锁存
+  20            5              UNL 2003
+  21            6              数码管位选
+  22            7              数码管段选
+  23          */
+  24          #define LED  4
+  25          #define WEI 6
+  26          #define DUAN 7
+  27          
+  28          /*---------------LED定义--------------*/
+  29          enum {
+  30                  L1_flash_start,
+  31                  L1_flash_stop,          
+  32          } L1_flash_flg = L1_flash_stop;
+  33          bit L1_flash_state = 0;
+  34          
+  35          #define LED_ON    0
+  36          #define LED_OFF   1
+  37          
+  38          
+  39          
+  40          /*---------------数码管定义-----------*/
+  41          code uchar Smg_Duan[]={0xc0, 0xf9, 0xa4, 0xb0, 0x99, 0x92, 0x82, 0xf8, 0x80, 0x90,0xff,0xbf};
+  42                                       //  0     1     2      3     4     5     6     7     8     9  无     -
+  43          uchar Smg_add = 0;
+  44          uchar SmgBuf[]={10,10,10,10,10,10,10,10};
+  45          uchar Smg_count =0;
+  46                                    //   全关
+  47          /*--------------蜂鸣器--------------*/
+  48          #define UNL  5
+  49          
+  50          /*---------------键盘定义-----------*/
+  51          bit Key_scan_flg = 0;
+  52          
+  53          /*---------------DS1302-----------*/
+  54          bit read_time_flg = 1;
+  55          
+C51 COMPILER V9.00   MAIN                                                                  03/03/2016 18:12:01 PAGE 2   
+
+  56          /*----------------DS18B20-------------*/
+  57          
+  58          bit Temp_disp_flg = 1;
+  59          bit Temp_collect_reset = 1;
+  60          uchar Temp_buf_point = 0;
+  61          uchar Temp_buf[10]={10};
+  62          enum {
+  63                  Temp_interval_1s,                                                        
+  64                  Temp_interval_5s,
+  65                  Temp_interval_30s,                                                                                      
+  66                  Temp_interval_60s,
+  67          } Temp_interval_time;
+  68          enum {
+  69                  Temp_collect_start,
+  70                  Temp_collect_stop,
+  71          } Temp_collect_flg = Temp_collect_stop;
+  72          
+  73          /*---------------界面状态-----------------*/
+  74          typedef enum{
+  75                  Win_State_1,
+  76                  Win_State_2,
+  77                  Win_State_3
+  78          } WinState_Typedef;
+  79          WinState_Typedef Win_State = Win_State_1;
+  80          /*--------------键盘动作-------------------*/
+  81          typedef enum{
+  82                  Key_Free,
+  83                  Key_S4,
+  84                  Key_S5,
+  85                  Key_S6,
+  86                  Key_S7
+  87          } KeyValue_Typedef;
+  88          KeyValue_Typedef Key_Value = Key_Free;
+  89          
+  90          
+  91          /**********************LED流水灯**********************/
+  92          void L1_disp(bit state){
+  93   1              P2 = 0x1f;
+  94   1              P0 = 0xff;
+  95   1              P2 = U24[4];
+  96   1              if(state == LED_ON)
+  97   1                      P0 = 0xfe;
+  98   1              else P0 = 0xff; 
+  99   1              P2 = 0x1f;
+ 100   1              P0 = 0x00;
+ 101   1      }
+ 102          /**********************数码管**********************/
+ 103          void Smg_disp(uchar SmgBuf[]){
+ 104   1              P2 = U24[WEI];;
+ 105   1              P0 = 0x00;
+ 106   1      
+ 107   1              P2 = 0x1f;
+ 108   1              P0 = 0xff;
+ 109   1              P2 = U24[DUAN];
+ 110   1              P0 = Smg_Duan[SmgBuf[Smg_add]];
+ 111   1              
+ 112   1              P2 = 0x1f;
+ 113   1              P0 = 0x00;
+ 114   1              P2 = U24[WEI];
+ 115   1              P0 = 1<< Smg_add;
+ 116   1      
+ 117   1              P2 = 0x1f;
+C51 COMPILER V9.00   MAIN                                                                  03/03/2016 18:12:01 PAGE 3   
+
+ 118   1              P0 = 0x00;
+ 119   1              
+ 120   1              Smg_add++;
+ 121   1              if(Smg_add >=8) Smg_add = 0;            
+ 122   1      }
+ 123          
+ 124          
+ 125          
+ 126          /**********************矩阵键盘********************/
+ 127          void Key_Scan(){
+ 128   1              P44 = 0;
+ 129   1              if(P33 == 0){           
+ 130   2                      Key_Value = Key_S4;
+ 131   2                      while(P33 == 0);
+ 132   2              }
+ 133   1              else if(P32 == 0){
+ 134   2                      Key_Value = Key_S5;
+ 135   2                      while(P32 == 0);
+ 136   2              }       
+ 137   1              else if(P31 == 0){
+ 138   2                      Key_Value = Key_S6;
+ 139   2                      while(P31 == 0);
+ 140   2              }
+ 141   1              else if(P30 == 0){
+ 142   2                      Key_Value = Key_S7;
+ 143   2                      while(P30 == 0);
+ 144   2              }
+ 145   1      }
+ 146          void put_S4(){
+ 147   1              if(Win_State == Win_State_1){
+ 148   2                      Key_Value = Key_Free;
+ 149   2                      Temp_interval_time++;
+ 150   2                      if(Temp_interval_time > Temp_interval_60s) 
+ 151   2                              Temp_interval_time = Temp_interval_1s;
+ 152   2              }
+ 153   1      }
+ 154          void put_S5(){
+ 155   1              if(Win_State == Win_State_1){
+ 156   2                      Key_Value = Key_Free;
+ 157   2                      Win_State = Win_State_2;
+ 158   2                      Temp_collect_flg = Temp_collect_start; 
+ 159   2                      if(system_run_reset == 0)
+ 160   2                              DS1302_Init();
+ 161   2              }       
+ 162   1      }
+ 163          void put_S6(){
+ 164   1              if(Win_State == Win_State_3){
+ 165   2                      Key_Value = Key_Free;
+ 166   2                      if(L1_flash_flg == L1_flash_start)
+ 167   2                              L1_flash_flg = L1_flash_stop;
+ 168   2                      else{
+ 169   3                              Temp_buf_point++;
+ 170   3                              if(Temp_buf_point >= 10)
+ 171   3                                      Temp_buf_point = 0;             
+ 172   3                      }
+ 173   2      
+ 174   2              }
+ 175   1      }
+ 176          void put_S7(){
+ 177   1              if((Win_State == Win_State_3) && (L1_flash_flg == L1_flash_stop)){
+ 178   2                      Key_Value = Key_Free;
+ 179   2                      Win_State = Win_State_1;
+C51 COMPILER V9.00   MAIN                                                                  03/03/2016 18:12:01 PAGE 4   
+
+ 180   2                      Temp_buf_point = 0;
+ 181   2                      system_run_reset = 1;   
+ 182   2              }
+ 183   1      }
+ 184          
+ 185          void Key_Ack(){
+ 186   1              switch(Key_Value){
+ 187   2                      case Key_S4:
+ 188   2                              put_S4();
+ 189   2                              break;
+ 190   2                      case Key_S5:
+ 191   2                              put_S5();
+ 192   2                              break;
+ 193   2                      case Key_S6:
+ 194   2                              put_S6();
+ 195   2                              break;
+ 196   2                      case Key_S7:
+ 197   2                              put_S7();
+ 198   2                              break;
+ 199   2              }                       
+ 200   1      }
+ 201          
+ 202          /*********************界面状态**********************/
+ 203          void Windows_State_1(){
+ 204   1              SmgBuf[0] = 10;
+ 205   1              SmgBuf[1] = 10;
+ 206   1              SmgBuf[2] = 10;
+ 207   1              SmgBuf[3] = 10;
+ 208   1              SmgBuf[4] = 10;
+ 209   1              SmgBuf[5] = 11;
+ 210   1              switch(Temp_interval_time){
+ 211   2                      case Temp_interval_1s:
+ 212   2                              SmgBuf[6] = 0;
+ 213   2                              SmgBuf[7] = 1;
+ 214   2                              break;
+ 215   2                      case Temp_interval_5s:
+ 216   2                              SmgBuf[6] = 0;
+ 217   2                              SmgBuf[7] = 5;
+ 218   2                              break;
+ 219   2                      case Temp_interval_30s:
+ 220   2                              SmgBuf[6] = 3;
+ 221   2                              SmgBuf[7] = 0;
+ 222   2                              break;
+ 223   2                      case Temp_interval_60s:
+ 224   2                              SmgBuf[6] = 6;
+ 225   2                              SmgBuf[7] = 0;
+ 226   2                              break;
+ 227   2              }
+ 228   1      }
+ 229          void Windows_State_2(){
+ 230   1              uchar tmp;
+ 231   1              if(prompt_flash_flg){
+ 232   2                      SmgBuf[5] = 11;
+ 233   2                      SmgBuf[2] = 11;
+ 234   2              }
+ 235   1              else{
+ 236   2                      SmgBuf[5] = 10;
+ 237   2                      SmgBuf[2] = 10;
+ 238   2              }
+ 239   1              if(read_time_flg){
+ 240   2                      read_time_flg = 0;
+ 241   2                      tmp     = Ds1302_Single_Byte_Read(0x81);
+C51 COMPILER V9.00   MAIN                                                                  03/03/2016 18:12:01 PAGE 5   
+
+ 242   2                      SmgBuf[7] = tmp % 10;
+ 243   2                      SmgBuf[6] = tmp / 10;
+ 244   2                      tmp = Ds1302_Single_Byte_Read(0x83);
+ 245   2                      if(tmp != 0xa5)
+ 246   2                      SmgBuf[4] = tmp % 10;
+ 247   2                      SmgBuf[3] = tmp / 10;
+ 248   2                      tmp = Ds1302_Single_Byte_Read(0x85);
+ 249   2                      SmgBuf[1] = tmp % 10;
+ 250   2                      SmgBuf[0] = tmp / 10;                                           
+ 251   2              }  
+ 252   1              if(Temp_collect_reset){
+ 253   2                      Temp_collect_reset = 0;
+ 254   2                      Temp_buf[Temp_buf_point] = Temp_read();
+ 255   2              //      SBUF = Temp_buf[Temp_buf_point];
+ 256   2                      Temp_buf_point++;
+ 257   2              }
+ 258   1              if(Temp_buf_point >= 10){
+ 259   2                      Temp_buf_point = 0;
+ 260   2                      Temp_collect_flg = Temp_collect_stop;
+ 261   2                      L1_flash_flg = L1_flash_start;
+ 262   2                      Win_State = Win_State_3;
+ 263   2              }
+ 264   1      }
+ 265          void Windows_State_3(){
+ 266   1              if(L1_flash_flg == L1_flash_start){
+ 267   2                      if(L1_flash_state)
+ 268   2                              L1_disp(LED_ON);
+ 269   2                      else L1_disp(LED_OFF);          
+ 270   2              }
+ 271   1              else L1_disp(LED_OFF);
+ 272   1              SmgBuf[0] = 11;
+ 273   1              SmgBuf[1] = Temp_buf_point / 10;
+ 274   1              SmgBuf[2] = Temp_buf_point % 10;
+ 275   1              SmgBuf[3] = 10;
+ 276   1              SmgBuf[4] = 10;
+ 277   1              SmgBuf[5] = 11;
+ 278   1              SmgBuf[6] = Temp_buf[Temp_buf_point] / 10;
+ 279   1              SmgBuf[7] = Temp_buf[Temp_buf_point] % 10;
+ 280   1      }
+ 281          void Windows_State(){
+ 282   1              switch(Win_State){
+ 283   2                      case Win_State_1:
+ 284   2                              Windows_State_1();
+ 285   2                              break;
+ 286   2                      case Win_State_2:
+ 287   2                              Windows_State_2();
+ 288   2                              break;                  
+ 289   2                      case Win_State_3:
+ 290   2                              Windows_State_3();
+ 291   2                              break;
+ 292   2              }       
+ 293   1      } 
+ 294          
+ 295          /**********************初始化程序*******************/
+ 296          void Timer0Init(void)           //1毫秒@11.0592MHz
+ 297          {
+ 298   1              AUXR |= 0x80;           //定时器时钟1T模式
+ 299   1              TMOD &= 0xF0;           //设置定时器模式
+ 300   1      //      TL0 = 0xCD;             //设置定时初值          
+ 301   1      //      TH0 = 0xD4;             //设置定时初值
+ 302   1              TL0 = 0x9A;             //设置定时初值
+ 303   1              TH0 = 0xA9;             //设置定时初值
+C51 COMPILER V9.00   MAIN                                                                  03/03/2016 18:12:01 PAGE 6   
+
+ 304   1      //      TL0 = 0x00;             //设置定时初值
+ 305   1      //      TH0 = 0x28;             //设置定时初值
+ 306   1              TF0 = 0;                //清除TF0标志
+ 307   1              TR0 = 1;                //定时器0开始计时
+ 308   1              ET0 = 1;
+ 309   1              EA = 1;
+ 310   1      }
+ 311          
+ 312          void UartInit(void)             //9600bps@11.0592MHz
+ 313          {
+ 314   1              SCON = 0x50;            //8位数据,可变波特率
+ 315   1              AUXR |= 0x40;           //定时器1时钟为Fosc,即1T
+ 316   1              AUXR &= 0xFE;           //串口1选择定时器1为波特率发生器
+ 317   1              TMOD &= 0x0F;           //设定定时器1为16位自动重装方式
+ 318   1              TL1 = 0xE0;             //设定定时初值
+ 319   1              TH1 = 0xFE;             //设定定时初值
+ 320   1              ET1 = 0;                //禁止定时器1中断
+ 321   1              TR1 = 1;                //启动定时器1
+ 322   1      }
+ 323          void Board_init(){
+ 324   1              P2 = U24[5];     //关蜂鸣器
+ 325   1              P0 = 0x00;
+ 326   1      
+ 327   1              P2 = U24[LED];   //关LED
+ 328   1              P0 = 0xff;
+ 329   1      }
+ 330          
+ 331          
+ 332          void system_init(){
+ 333   1              Board_init();                            
+ 334   1              UartInit();                                 
+ 335   1              Timer0Init();
+ 336   1              Temp_read();
+ 337   1              Temp_read();
+ 338   1      }
+ 339          
+ 340          /**********************主函数**********************/
+ 341          void main(){
+ 342   1              system_init();
+ 343   1          while(1)
+ 344   1          {
+ 345   2                      Windows_State();
+ 346   2                      if(Key_scan_flg){
+ 347   3                              Key_scan_flg = 0;
+ 348   3                              Key_Scan();     
+ 349   3                              Key_Ack();
+ 350   3                      }               
+ 351   2              /*      if(Temp_disp_flg == 1){
+ 352   2                              Temp_disp_flg = 0;
+ 353   2      
+ 354   2                              SBUF = Temp_read();
+ 355   2                      } */
+ 356   2          }
+ 357   1      }
+ 358          /**********************中断入口********************/
+ 359          void Timer0() interrupt 1
+ 360          {                
+ 361   1              time_base_2ms++;
+ 362   1              Smg_disp(SmgBuf);
+ 363   1              if(time_base_2ms % 5 == 0){
+ 364   2                      Key_scan_flg = 1;       
+ 365   2              }  
+C51 COMPILER V9.00   MAIN                                                                  03/03/2016 18:12:01 PAGE 7   
+
+ 366   1              if(time_base_2ms % 100 == 0){
+ 367   2              //      Temp_disp_flg = 1;
+ 368   2                      if(L1_flash_flg == L1_flash_start){
+ 369   3                              L1_flash_state = ~L1_flash_state;
+ 370   3                      }                 
+ 371   2              }       
+ 372   1              if(time_base_2ms % 250 == 0){
+ 373   2                      Uart_send_flg = 1;
+ 374   2                      read_time_flg = 1;
+ 375   2              }                               
+ 376   1              if(time_base_2ms % 500 == 0){
+ 377   2                      prompt_flash_flg = ~prompt_flash_flg;
+ 378   2              }
+ 379   1              if(Temp_collect_flg == Temp_collect_start){
+ 380   2                      switch(Temp_interval_time){
+ 381   3                              case Temp_interval_1s:
+ 382   3                                      if(time_base_2ms % 500 ==0){
+ 383   4                                              Temp_collect_reset = 1;                                         
+ 384   4                                      }
+ 385   3                                      break;
+ 386   3                              case Temp_interval_5s:
+ 387   3                                      if(time_base_2ms % (500*5) ==0){
+ 388   4                                              Temp_collect_reset = 1;
+ 389   4                                      }
+ 390   3                                      break;
+ 391   3                              case Temp_interval_30s:
+ 392   3                                      if(time_base_2ms % (500*30) ==0){
+ 393   4                                              Temp_collect_reset = 1;                                 
+ 394   4                                      }
+ 395   3                                      break;
+ 396   3                              case Temp_interval_60s:
+ 397   3                                      if(time_base_2ms % (500*60) ==0){
+ 398   4                                              Temp_collect_reset = 1;
+ 399   4                                      }
+ 400   3                                      break; 
+ 401   3                      }                                                                
+ 402   2              }
+ 403   1              
+ 404   1      }
+ 405          void Uart1() interrupt 4
+ 406          {
+ 407   1              TI = 0; 
+ 408   1      }
+ 409                            
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   1065    ----
+   CONSTANT SIZE    =     12    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     40    ----
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =      8       1
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)

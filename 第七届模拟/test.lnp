@@ -1,0 +1,7 @@
+"STARTUP.obj",
+"DS18B20.obj",
+"DS1302.obj",
+"main.obj",
+"PCF8591.obj" 
+TO "test" 
+RAMSIZE(256) 

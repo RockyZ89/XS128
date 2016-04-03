@@ -1,0 +1,448 @@
+C51 COMPILER V9.00   MAIN                                                                  03/07/2016 11:02:41 PAGE 1   
+
+
+C51 COMPILER V9.00, COMPILATION OF MODULE MAIN
+OBJECT MODULE PLACED IN main.OBJ
+COMPILER INVOKED BY: D:\Program Files (x86)\KEIL\C51\BIN\C51.EXE main.c BROWSE DEBUG OBJECTEXTEND
+
+line level    source
+
+   1          #include "ds18b20.h"
+   2          #include "K60S2.h"
+   3          
+   4          
+   5          /****************************变量 & 宏定义************************/
+   6          /*---------------系统全局-------------*/
+   7          #define RESET 0
+   8          #define SET 1
+   9          #define Write_138(com , dat) {P2 = com; P0 = dat;}
+  10          
+  11          ulong time_base_2ms = 0;
+  12          enum{
+  13                  win_state_def,
+  14                  win_state_edit
+  15          }win_state ;//= win_state_edit;
+  16          
+  17          
+  18          /*---------------LED-------------*/
+  19          #define LED_ON 0
+  20          #define LED_OFF 1
+  21          
+  22          bit L1_flash_flg = SET;
+  23          enum{
+  24                  L1_flash_interval_2,
+  25                  L1_flash_interval_4,
+  26                  L1_flash_interval_8
+  27          }L1_flash_interval;
+  28          
+  29          /*---------------数码管-------------*/
+  30          code uchar smg_code[]={0xc0, 0xf9, 0xa4, 0xb0, 0x99, 0x92, 0x82, 0xf8, 0x80, 0x90,0xff,0xbf};
+  31          uchar smg_buf[8]={10,10,10,10,10,10,10,1};
+  32          bit smg_changed_flg = RESET; 
+  33          
+  34          /*---------------键盘-------------*/
+  35          uchar key_value = 0;
+  36          bit key_scan_flg = SET;
+  37          uchar key_buf[4]={10,10,10,10};
+  38          uchar key_buf_point = 0;
+  39          bit put_set_key_flg = RESET;
+  40          bit input_finished_flg = RESET;
+  41          
+  42          /*---------------DS18B20-------------*/
+  43          bit temp_read_flg = SET;
+  44          uchar temp_max = 30;
+  45          uchar temp_min = 20;
+  46          uchar current_temp = 0;
+  47          bit temp_arg_err_flg = RESET;
+  48          enum{
+  49                  temp_interval_0,
+  50                  temp_interval_1,
+  51                  temp_interval_2
+  52          }temp_interval;
+  53          
+  54          
+  55          /*-----------蜂鸣器 & 继电器-----------*/
+C51 COMPILER V9.00   MAIN                                                                  03/07/2016 11:02:41 PAGE 2   
+
+  56          #define RELAY_ON 0
+  57          #define RELAY_OFF 1
+  58          
+  59          /**************************函数************************/
+  60          /*=================LED================*/
+  61          void Led_disp(uchar L_x , bit state){
+  62   1              if(state == LED_ON){
+  63   2                      switch(L_x){
+  64   3                              case 1:
+  65   3                                      Write_138(0x1f , 0xff);
+  66   3                                      Write_138(0x04<<5 , 0xfe);
+  67   3                                      Write_138(0x1f , 0x00);
+  68   3                                      break;
+  69   3                              case 2:
+  70   3                                      Write_138(0x1f , 0xff);
+  71   3                                      Write_138(0x04<<5 , 0xfd);
+  72   3                                      Write_138(0x1f , 0x00);
+  73   3                                      break;          
+  74   3                      }
+  75   2              }
+  76   1              else{
+  77   2                      switch(L_x){
+  78   3                              case 1:
+  79   3                                      Write_138(0x1f , 0xff);
+  80   3                                      Write_138(0x04<<5 , 0xff);
+  81   3                                      Write_138(0x1f , 0x00);
+  82   3                                      break;
+  83   3                              case 2:
+  84   3                                      Write_138(0x1f , 0xff);
+  85   3                                      Write_138(0x04<<5 , 0xff);
+  86   3                                      Write_138(0x1f , 0x00);
+  87   3                                      break;          
+  88   3                      }
+  89   2              }       
+  90   1      }
+  91          /*================数码管================*/
+  92          void Smg_disp(){
+  93   1              static uchar smg_addr = 0;
+  94   1              Write_138(0x06<<5 , 0x00);
+  95   1      
+  96   1              Write_138(0x1f , 0xff);
+  97   1              Write_138(0x07<<5 , smg_code[smg_buf[smg_addr]]);
+  98   1              Write_138(0x1f , 0x00);
+  99   1              Write_138(0x06<<5 , 0x01 << smg_addr);  
+ 100   1      
+ 101   1              Write_138(0x1f , 0x00);
+ 102   1      
+ 103   1              smg_addr++;
+ 104   1              if(smg_addr >= 8) smg_addr = 0;         
+ 105   1      }
+ 106          
+ 107          /*================蜂鸣器 & 继电器================*/
+ 108          void Relay(bit state){
+ 109   1              if(state == RELAY_ON){
+ 110   2                      Write_138(0x05<<5 , 0x01<<4);                   
+ 111   2              }
+ 112   1              else{
+ 113   2                      Write_138(0x05<<5 , 0x00);
+ 114   2              }       
+ 115   1      } 
+ 116          
+ 117          /*================矩阵键盘================*/
+C51 COMPILER V9.00   MAIN                                                                  03/07/2016 11:02:41 PAGE 3   
+
+ 118          void Key_scan(){
+ 119   1              uchar row = 1;
+ 120   1              uchar col = 0;
+ 121   1              uchar tmp = 0;
+ 122   1      
+ 123   1              P3 = 0x0f;
+ 124   1              P42 = 0;
+ 125   1              P44 = 0;
+ 126   1              tmp = P3 & 0x0f;  
+ 127   1              if(tmp != 0x0f){
+ 128   2                      switch(tmp){
+ 129   3                              case 0x0e:
+ 130   3                                      row = 1;
+ 131   3                                      break;
+ 132   3                              case 0x0d:
+ 133   3                                      row = 2;
+ 134   3                                      break;
+ 135   3                              case 0x0b:
+ 136   3                                      row = 3;
+ 137   3                                      break;
+ 138   3                              case 0x07:
+ 139   3                                      row = 4;
+ 140   3                                      break;
+ 141   3                              
+ 142   3                      }
+ 143   2                      P3 = 0xf0;
+ 144   2                      P42 = 1;
+ 145   2                      P44 = 1;
+ 146   2                      if(P44 == 0) col = 1;           
+ 147   2                      else if(P42 == 0) col = 2;      
+ 148   2                      else if(P35 == 0) col =3;       
+ 149   2                      else if(P34 == 0) col = 4;
+ 150   2                      while(!P44 || !P42 || !P35 || !P34) ;   
+ 151   2                      key_value = 4*(row-1) + col; 
+ 152   2              }
+ 153   1              else key_value = 0;      
+ 154   1      }
+ 155          void Put_set_key(){
+ 156   1              if(win_state == win_state_def){
+ 157   2                      win_state = win_state_edit;
+ 158   2                      key_buf[0] = 10;
+ 159   2                      key_buf[1] = 10;
+ 160   2                      key_buf[2] = 10;
+ 161   2                      key_buf[3] = 10;
+ 162   2                      key_buf_point = 0;
+ 163   2                      input_finished_flg = RESET;
+ 164   2                      smg_changed_flg = RESET;
+ 165   2              }
+ 166   1              else{
+ 167   2                      if(input_finished_flg == SET && temp_arg_err_flg == RESET){
+ 168   3                              win_state = win_state_def;
+ 169   3                              smg_changed_flg = RESET;        
+ 170   3                      }               
+ 171   2              }               
+ 172   1      }
+ 173          void Put_reset_key(){
+ 174   1              if(win_state == win_state_edit){
+ 175   2                      key_buf[0] = 10;
+ 176   2                      key_buf[1] = 10;
+ 177   2                      key_buf[2] = 10;
+ 178   2                      key_buf[3] = 10;
+ 179   2                      input_finished_flg = RESET;             
+C51 COMPILER V9.00   MAIN                                                                  03/07/2016 11:02:41 PAGE 4   
+
+ 180   2                      temp_arg_err_flg = RESET;
+ 181   2                      key_buf_point = 0;
+ 182   2              }
+ 183   1      }
+ 184          void Key_ack(){
+ 185   1              if(key_value != 0){
+ 186   2                      switch(key_value){
+ 187   3                              case 1:
+ 188   3                                      if(input_finished_flg == RESET){
+ 189   4                                              key_buf[key_buf_point] = 0;
+ 190   4                                              key_buf_point++;
+ 191   4                                      }
+ 192   3                                      break;  
+ 193   3                              case 2:
+ 194   3                                      if(input_finished_flg == RESET){
+ 195   4                                              key_buf[key_buf_point] = 1;
+ 196   4                                              key_buf_point++;
+ 197   4                                      }
+ 198   3                                      break;
+ 199   3                              case 3:
+ 200   3                                      if(input_finished_flg == RESET){
+ 201   4                                              key_buf[key_buf_point] = 2;
+ 202   4                                              key_buf_point++;
+ 203   4                                      }
+ 204   3                                      break;
+ 205   3                              case 5:
+ 206   3                                      if(input_finished_flg == RESET){
+ 207   4                                              key_buf[key_buf_point] = 3;
+ 208   4                                              key_buf_point++;
+ 209   4                                      }
+ 210   3                                      break;
+ 211   3                              case 6:
+ 212   3                                      if(input_finished_flg == RESET){
+ 213   4                                              key_buf[key_buf_point] = 4;
+ 214   4                                              key_buf_point++;
+ 215   4                                      }
+ 216   3                                      break;
+ 217   3                              case 7:
+ 218   3                                      if(input_finished_flg == RESET){
+ 219   4                                              key_buf[key_buf_point] = 5;
+ 220   4                                              key_buf_point++;
+ 221   4                                      }
+ 222   3                                      break;
+ 223   3                              case 9:
+ 224   3                                      if(input_finished_flg == RESET){
+ 225   4                                              key_buf[key_buf_point] = 6;
+ 226   4                                              key_buf_point++;
+ 227   4                                      }
+ 228   3                                      break;
+ 229   3                              case 10:
+ 230   3                                      if(input_finished_flg == RESET){
+ 231   4                                              key_buf[key_buf_point] = 7;
+ 232   4                                              key_buf_point++;
+ 233   4                                      }
+ 234   3                                      break;
+ 235   3                              case 11:
+ 236   3                                      if(input_finished_flg == RESET){
+ 237   4                                              key_buf[key_buf_point] = 8;
+ 238   4                                              key_buf_point++;
+ 239   4                                      }
+ 240   3                                      break;  
+ 241   3                              case 13:
+C51 COMPILER V9.00   MAIN                                                                  03/07/2016 11:02:41 PAGE 5   
+
+ 242   3                                      if(input_finished_flg == RESET){
+ 243   4                                              key_buf[key_buf_point] = 9;
+ 244   4                                              key_buf_point++;
+ 245   4                                      }
+ 246   3                                      break;
+ 247   3                              case 14:
+ 248   3                                      Put_set_key();                  
+ 249   3                                      break;
+ 250   3                              case 15:
+ 251   3                                      Put_reset_key();
+ 252   3                                      break;          
+ 253   3                      }
+ 254   2                      key_value = 0;
+ 255   2                      if(key_buf_point >= 4) input_finished_flg = SET;                
+ 256   2              }               
+ 257   1      }
+ 258          
+ 259          /*================界面状态================*/
+ 260          void Windows_def(){
+ 261   1              if(current_temp < temp_min){
+ 262   2                      temp_interval = temp_interval_0;
+ 263   2                      L1_flash_interval = L1_flash_interval_2;
+ 264   2                      Relay(RELAY_OFF);
+ 265   2              }
+ 266   1              else if(current_temp >= temp_min && current_temp <= temp_max){
+ 267   2                      temp_interval = temp_interval_1;
+ 268   2                      L1_flash_interval = L1_flash_interval_4;
+ 269   2                      Relay(RELAY_OFF);       
+ 270   2              }
+ 271   1              else{
+ 272   2                      temp_interval = temp_interval_2;
+ 273   2                      L1_flash_interval = L1_flash_interval_8;
+ 274   2                      Relay(RELAY_ON);        
+ 275   2              }
+ 276   1              smg_buf[1] = temp_interval;
+ 277   1              smg_buf[6] = current_temp / 10;
+ 278   1              smg_buf[7] = current_temp % 10;
+ 279   1              if(smg_changed_flg == RESET){
+ 280   2                      smg_buf[0] = 11;
+ 281   2                      smg_buf[2] = 11;
+ 282   2                      smg_buf[3] = 10;
+ 283   2                      smg_buf[4] = 10;
+ 284   2                      smg_buf[5] = 10;
+ 285   2                      smg_changed_flg = SET;
+ 286   2              }
+ 287   1              if(L1_flash_flg == SET){
+ 288   2                      Led_disp(1,LED_ON);             
+ 289   2              }
+ 290   1              else{
+ 291   2                      Led_disp(1,LED_OFF);    
+ 292   2              }
+ 293   1      }
+ 294          void Windows_edit(){
+ 295   1              Led_disp(1,LED_OFF);
+ 296   1              if(smg_changed_flg == RESET){
+ 297   2                      smg_buf[0] = 11;
+ 298   2                      smg_buf[5] = 11;
+ 299   2                      smg_buf[3] = 10;
+ 300   2                      smg_buf[4] = 10;
+ 301   2                      smg_changed_flg = SET;  
+ 302   2              }
+ 303   1              smg_buf[1] = key_buf[0];
+C51 COMPILER V9.00   MAIN                                                                  03/07/2016 11:02:41 PAGE 6   
+
+ 304   1              smg_buf[2] = key_buf[1];
+ 305   1              smg_buf[6] = key_buf[2];
+ 306   1              smg_buf[7] = key_buf[3];
+ 307   1              if(input_finished_flg == SET){
+ 308   2                      temp_max = key_buf[0] * 10 + key_buf[1];
+ 309   2                      temp_min = key_buf[2] * 10 + key_buf[3];
+ 310   2                      if(temp_max < temp_min){
+ 311   3                              temp_arg_err_flg = SET;
+ 312   3                              Led_disp(2,LED_ON);
+ 313   3                      }
+ 314   2                      else{
+ 315   3                              temp_arg_err_flg = RESET;
+ 316   3                              Led_disp(2,LED_OFF);
+ 317   3                      }
+ 318   2              }                       
+ 319   1      }
+ 320          void Windows_disp(){
+ 321   1              switch(win_state){
+ 322   2                      case win_state_def:
+ 323   2                              Windows_def();
+ 324   2                              break;
+ 325   2                      case win_state_edit:
+ 326   2                              Windows_edit();
+ 327   2                              break;
+ 328   2              }
+ 329   1      }
+ 330          /*==============系统初始化=============*/
+ 331          void Timer0Init(void)           //1毫秒@11.0592MHz
+ 332          {
+ 333   1              AUXR |= 0x80;           //定时器时钟1T模式
+ 334   1              TMOD &= 0xF0;           //设置定时器模式
+ 335   1      //      TL0 = 0xCD;             //设置定时初值          
+ 336   1      //      TH0 = 0xD4;             //设置定时初值
+ 337   1              TL0 = 0x9A;             //设置定时初值
+ 338   1              TH0 = 0xA9;             //设置定时初值
+ 339   1      //      TL0 = 0x00;             //设置定时初值
+ 340   1      //      TH0 = 0x28;             //设置定时初值
+ 341   1              TF0 = 0;                //清除TF0标志
+ 342   1              TR0 = 1;                //定时器0开始计时
+ 343   1              ET0 = 1;
+ 344   1              EA = 1;
+ 345   1      }
+ 346          
+ 347          void UartInit(void)             //9600bps@11.0592MHz
+ 348          {
+ 349   1              SCON = 0x50;            //8位数据,可变波特率
+ 350   1              AUXR |= 0x40;           //定时器1时钟为Fosc,即1T
+ 351   1              AUXR &= 0xFE;           //串口1选择定时器1为波特率发生器
+ 352   1              TMOD &= 0x0F;           //设定定时器1为16位自动重装方式
+ 353   1              TL1 = 0xE0;             //设定定时初值
+ 354   1              TH1 = 0xFE;             //设定定时初值
+ 355   1              ET1 = 0;                //禁止定时器1中断
+ 356   1              TR1 = 1;                //启动定时器1
+ 357   1      }
+ 358          void System_init(){
+ 359   1              Write_138(0x05<<5, 0x00); //关蜂鸣器
+ 360   1              Write_138(0x04<<5, 0xff); //关LED                                
+ 361   1              UartInit();                                 
+ 362   1              Timer0Init();
+ 363   1              Read_temp();
+ 364   1              Read_temp();
+ 365   1      }
+C51 COMPILER V9.00   MAIN                                                                  03/07/2016 11:02:41 PAGE 7   
+
+ 366          /*================主函数================*/
+ 367          void main(){
+ 368   1              System_init();
+ 369   1              while(1){
+ 370   2                      Windows_disp();
+ 371   2                      if(key_scan_flg == SET){
+ 372   3                              key_scan_flg = RESET;   
+ 373   3                              Key_scan();
+ 374   3                              Key_ack();
+ 375   3                      }          
+ 376   2                      if(temp_read_flg == SET){
+ 377   3                              temp_read_flg = RESET;
+ 378   3                              current_temp = Read_temp();
+ 379   3                      }        
+ 380   2              } 
+ 381   1      }
+ 382          /*================中断入口==============*/
+ 383          void Timer0() interrupt 1
+ 384          {
+ 385   1              time_base_2ms++;
+ 386   1              Smg_disp();
+ 387   1              if(time_base_2ms % 10 == 0){
+ 388   2                      key_scan_flg = SET;
+ 389   2              }
+ 390   1              if(time_base_2ms % 250 == 0){
+ 391   2                      temp_read_flg = SET;
+ 392   2              }
+ 393   1              if(time_base_2ms % 100 == 0){
+ 394   2                      switch(L1_flash_interval){
+ 395   3                              case L1_flash_interval_2:
+ 396   3                                              L1_flash_flg = ~L1_flash_flg;
+ 397   3                                      break;
+ 398   3                              case L1_flash_interval_4:
+ 399   3                                      if(time_base_2ms % 200 == 0){
+ 400   4                                              L1_flash_flg = ~L1_flash_flg;
+ 401   4                                      }
+ 402   3                                      break;
+ 403   3                              case L1_flash_interval_8:
+ 404   3                                      if(time_base_2ms % 400 == 0){
+ 405   4                                              L1_flash_flg = ~L1_flash_flg;
+ 406   4                                      }
+ 407   3                                      break;   
+ 408   3                      }
+ 409   2              }
+ 410   1      }
+ 411          void Uart0() interrupt 4{
+ 412   1              TI = 0;
+ 413   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   1169    ----
+   CONSTANT SIZE    =     12    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     25    ----
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =      7       2
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
